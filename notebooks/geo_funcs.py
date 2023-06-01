@@ -86,6 +86,8 @@ def calc_geodesic(p1, p2, verbose=False):
         sinλ = math.sin(λ)
         cosλ = math.cos(λ)
         sinSqσ = (cosU2 * sinλ) ** 2 + (cosU1 * sinU2 - sinU1 * cosU2 * cosλ) ** 2
+        if sinSqσ==0:
+            break
         sinσ = math.sqrt(sinSqσ)
         cosσ = sinU1 * sinU2 + cosU1 * cosU2 * cosλ
         σ = math.atan2(sinσ, cosσ)
@@ -97,7 +99,12 @@ def calc_geodesic(p1, p2, verbose=False):
         λ = L + (1 - C) * f * sinα * (σ + C * sinσ * (cos2σₘ + C * cosσ * (-1 + 2 * cos2σₘ * cos2σₘ)))
         if math.fabs(λ - λʹ) <= 1e-12:
             break
-
+    if cosSqα is None:
+        return {'s_geo_len': 0,
+                'α1': 0,
+                'α2': 0,
+                'pace': 0,
+                'kmh': 0}
     uSq = cosSqα * (a * a - b * b) / (b * b)
     A = 1 + uSq / 16384 * (4096 + uSq * (-768 + uSq * (320 - 175 * uSq)))
     B = uSq / 1024 * (256 + uSq * (-128 + uSq * (74 - 47 * uSq)))

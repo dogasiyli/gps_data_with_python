@@ -37,10 +37,14 @@ def plot_all_key_difs(_dict, x_label="Index", y_label="Speed (km/h)", title="Spe
             key_i = all_keys[i]
             key_j = all_keys[j]
             _ax = ax if sub_plot_count==1 else ax[k]
-            _ax.plot(abs(_dict[key_i]-_dict[key_j]), linewidth=thickness)
-            _ax.set_title(f"{key_i}-{key_j}")
-            _ax.set_xlabel(x_label)
-            _ax.set_ylabel(y_label)
+            if len(_dict[key_i])==len(_dict[key_j]):
+                _plot_vec = abs(_dict[key_i]-_dict[key_j])
+                _ax.plot(_plot_vec, linewidth=thickness)
+                _ax.plot([0, len(_plot_vec)], [np.mean(_plot_vec), np.mean(_plot_vec)], 'r--', linewidth=thickness)
+                _ax.text(0, np.max(_plot_vec), f"mean={np.mean(_plot_vec):.2f}")
+                _ax.set_title(f"{key_i}-{key_j}")
+                _ax.set_xlabel(x_label)
+                _ax.set_ylabel(y_label)
             k += 1
     plt.tight_layout(pad=2.5)
     plt.show()
@@ -48,14 +52,57 @@ def plot_all_key_difs(_dict, x_label="Index", y_label="Speed (km/h)", title="Spe
 def step_01_load_data(file_id=2):
     gpx_files = list_gpx_files()
     gpx_obj = load_gpx_file(gpx_files, file_id)
+    print(f"num of tracks={len(gpx_obj.tracks)}")
     segment = gpx_obj.tracks[0].segments[0]
     return gpx_obj, segment
+
+def interpolate_point(prev_point, next_point):
+    interpolated_point = {
+        'latitude': np.interp(0.5, [0, 1], [prev_point['latitude'], next_point['latitude']]),
+        'longitude': np.interp(0.5, [0, 1], [prev_point['longitude'], next_point['longitude']]),
+        'elevation': np.interp(0.5, [0, 1], [prev_point['elevation'], next_point['elevation']]),
+        'speed': np.interp(0.5, [0, 1], [prev_point['speed'], next_point['speed']]),
+        'time': np.interp(0.5, [0, 1], [prev_point['time'], next_point['time']])
+    }
+    return interpolated_point
+
+def fix_none_in_speed(speed, segment):
+    none_indices = np.argwhere(speed==None).squeeze()  # Get indices of None values in speed array
+    if len(none_indices) == 0:
+        return speed, segment
+    print(f"none_indices = {none_indices}")
+    segment.points = [p for idx, p in enumerate(segment.points) if idx not in none_indices]
+    speed = np.array([p.speed for p in segment.points])
+    # for idx in none_indices:
+    #     if idx == 0:
+    #         # If the first element is None, find the first non-None value after it
+    #         next_idx = np.where(speed[idx+1:] is not None)[0][0] + idx + 1
+    #         speed[idx] = np.interp(idx, [idx, next_idx], [speed[idx], speed[next_idx]])
+    #         segment.points[idx] = interpolate_point(segment.points[idx], segment.points[next_idx])
+    #     elif idx == len(speed) - 1:
+    #         # If the last element is None, find the last non-None value before it
+    #         prev_idx = np.where(speed[:idx] is not None)[0][-1]
+    #         speed[idx] = np.interp(idx, [prev_idx, idx], [speed[prev_idx], speed[idx]])
+    #         segment.points[idx] = interpolate_point(segment.points[prev_idx], segment.points[idx])
+    #     else:
+    #         # Find the previous and next non-None values
+    #         prev_idx = np.where(speed[:idx] is not None)[0][-1]
+    #         next_idx = np.where(speed[idx+1:] is not None)[0][0] + idx + 1
+            
+    #         # Linearly interpolate the None value
+    #         speed[idx] = np.interp(idx, [prev_idx, next_idx], [speed[prev_idx], speed[next_idx]])
+    #         segment.points[idx] = interpolate_point(segment.points[prev_idx], segment.points[next_idx])
+    return speed, segment
 
 def step_02_initial_speed(gpx_obj, segment, speed_dict):
     segment.points[0].speed = 0.0
     segment.points[-1].speed = 0.0
     gpx_obj.add_missing_speeds()
-    speed = np.array([p.speed for p in segment.points])*3.6
+    speed = np.array([p.speed for p in segment.points])
+
+    speed, segment = fix_none_in_speed(speed, segment)
+
+    speed *= 3.6
     speed_dict['speed_0_initial'] = speed
 
     speed_vincenty = np.zeros_like(speed)
@@ -96,9 +143,10 @@ def step_07_fill_nan_values(coords, measurements, verbose=0):
         print(f"num of filled coords={len(null_elevation_idx)} in {len(coords.ele)}")
     if verbose:
         fig = plt.figure(figsize=(12,12))
-        plt.plot(measurements[:,0], measurements[:,1], 'bo', markersize=5)
-        plt.plot(filled_coords['lon'].values, filled_coords['lat'].values, 'r*', markersize=3)
+        plt.plot(measurements[:,0], measurements[:,1], 'bo', markersize=5, label="original")
+        plt.plot(filled_coords['lon'].values, filled_coords['lat'].values, 'r*', markersize=3, label="filled")
         plt.xticks(rotation=45)
+        plt.legend(bbox_to_anchor=(1.05, 1), borderaxespad=5, fontsize='xx-small')
     return coords, original_coords_idx
 
 def step_08_setup_kalman_filter(measurements):
@@ -162,7 +210,7 @@ def step_10_plot_smoothed_vs_measured(state_means, measurements):
     # Move the legends to the right of the plot
     plt.show()
 
-def step_11_15_update_coords(state_means, coords, segment, original_coords_idx):
+def step_11_15_22_update_coords(state_means, coords, segment, original_coords_idx):
     coords.iloc[:, [2,1,3]] = state_means[:,:3]
     orig_coords = coords.iloc[original_coords_idx].set_index('idx')
     for i, p in enumerate(segment.points):
@@ -172,14 +220,14 @@ def step_11_15_update_coords(state_means, coords, segment, original_coords_idx):
         p.latitude = orig_coords.at[float(i),'lat']
     return coords, orig_coords
 
-def step_12_16_add_missing_speeds(gpx_obj, segment, speed_dict, sdict_key, plot_afeter_add=False):
+def step_12_16_23_add_missing_speeds(gpx_obj, segment, speed_dict, sdict_key, plot_after_add=False):
     segment.points[0].speed = 0.0
     segment.points[-1].speed = 0.0
     gpx_obj.add_missing_speeds()
 
     speed = np.array([p.speed for p in segment.points])*3.6
     speed_dict[sdict_key] = speed
-    if plot_afeter_add:
+    if plot_after_add:
         plt.plot(speed)
     return speed
 
@@ -187,24 +235,24 @@ def step_13_get_high_speed_block(speed, measurements, segment, plot_result=False
     fig, axs = plt.subplots(2,1, figsize=(12, 12))
     sdifs = speed[1:]-speed[:-1]
     max_dif_at = np.argsort(-sdifs)
-    use_sub_arr = get_indices(max_dif_at[1], 10, 10)
+    high_speed_block = get_indices(max_dif_at[0], 10, 10)
     if verbose:
         print(max_dif_at[:10])
         print(sdifs[max_dif_at[:10]])
         print(max_dif_at[1])
-        print(min(use_sub_arr), max(use_sub_arr))
+        print(min(high_speed_block), max(high_speed_block))
     if plot_result:
-        axs[0].plot(measurements[use_sub_arr,0], measurements[use_sub_arr,1], 'o', alpha=0.5)
-        axs[0].set_title(f"High speed block between {min(use_sub_arr)} and {max(use_sub_arr)} \n {len(use_sub_arr)} points")
+        axs[0].plot(measurements[high_speed_block,0], measurements[high_speed_block,1], 'o', alpha=0.5)
+        axs[0].set_title(f"High speed block between {min(high_speed_block)} and {max(high_speed_block)} \n {len(high_speed_block)} points")
         axs[0].set_xlabel("Longitude")
         axs[0].set_ylabel("Latitude")
 
-        _s = [p.speed for p in segment.points[min(use_sub_arr):max(use_sub_arr)]]
+        _s = [p.speed for p in segment.points[min(high_speed_block):max(high_speed_block)]]
         axs[1].scatter(range(len(_s)), _s, alpha=0.5)
         axs[1].set_title(f"speed is in km/h \n {len(_s)} points")
 
     plt.tight_layout(pad=2.5)
-    return use_sub_arr
+    return high_speed_block
 
 def step_14_find_bad_readings_from_variance(measurements, state_vars, verbose=False):
     bad_readings = np.argsort(np.trace(state_vars[:,:2,:2], axis1=1, axis2=2))[:-20:-1]
@@ -232,10 +280,10 @@ def step_14_find_bad_readings_from_variance(measurements, state_vars, verbose=Fa
     measurements.mask[bad_readings, :] = True 
     return measurements, bad_readings
 
-def step_17_21_calc_speed_with_corrected_positions(state_means, speed_dict, sdict_key, measurements, use_sub_arr, verbose=False, plot_result=2):
+def step_17_21_calc_speed_with_corrected_positions(state_means, speed_dict, sdict_key, measurements, high_speed_block, verbose=False, plot_result=2):
     # calculate the speed directly on our array
     speed = [3.6*haversine(state_means[i,1::-1], state_means[i+1,1::-1]) for i in np.arange(state_means.shape[0]-1)]
-    speed_dict[sdict_key] = speed
+    speed_dict[sdict_key] = np.array(speed)
     # the line returns the indices of the 9 largest elements in the speed array, 
     # with the indices arranged in descending order based on the corresponding element values. 
     # This can be useful for identifying the highest values or top elements in the speed array.
@@ -248,7 +296,7 @@ def step_17_21_calc_speed_with_corrected_positions(state_means, speed_dict, sdic
         axs = [axs]
 
     axs[0].plot(speed, label="speed")
-    axs[0].plot(speed[min(use_sub_arr):max(use_sub_arr)], '.', label="speed in high speed block")
+    axs[0].plot(speed[min(high_speed_block):max(high_speed_block)], '.', label="speed in high speed block")
     axs[0].plot(largest_speed_idx, [speed[i] for i in largest_speed_idx], 'bo', label="largest speed", markersize=10)
     axs[0].set_title(f"{len(speed)} speed points")
     axs[0].set_xlabel("time")
@@ -261,10 +309,13 @@ def step_17_21_calc_speed_with_corrected_positions(state_means, speed_dict, sdic
         masked_idx = np.where(measurements.mask[:,0] == True)[0]
         unmasked_idx = np.where(measurements.mask[:,0] == False)[0]
         print(f"number of masked elements={len(masked_idx)} unmasked={len(unmasked_idx)}")
-        axs[1].plot(measurements.data[masked_idx][:,0], measurements.data[masked_idx][:,1], 'ro', alpha=0.5, markersize=10, label="masked")
+        try:
+            axs[1].plot(measurements.data[masked_idx][:,0], measurements.data[masked_idx][:,1], 'ro', alpha=0.5, markersize=10, label="masked")
+        except:
+            pass
         axs[1].plot(measurements.data[unmasked_idx][:,0], measurements.data[unmasked_idx][:,1], 'b.', markersize=2, label="unmasked")
-        axs[1].plot(measurements[use_sub_arr,0], measurements[use_sub_arr,1], 'yo', markersize=10, alpha=0.5, label="high speed block")
-        axs[1].set_title(f"High speed block between {min(use_sub_arr)} and {max(use_sub_arr)} \n {len(use_sub_arr)} points")
+        axs[1].plot(measurements[high_speed_block,0], measurements[high_speed_block,1], 'yo', markersize=10, alpha=0.5, label="high speed block")
+        axs[1].set_title(f"High speed block between {min(high_speed_block)} and {max(high_speed_block)} \n {len(high_speed_block)} points")
         axs[1].set_xlabel("Longitude")
         axs[1].set_ylabel("Latitude")
         axs[1].legend(bbox_to_anchor=(1.05, 1), borderaxespad=5, fontsize='xx-small')

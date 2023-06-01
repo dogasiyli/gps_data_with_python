@@ -14,6 +14,7 @@ def list_gpx_files():
 
 def load_gpx_file(gpx_files, gpx_file_id):
     gpx_file_name = gpx_files[gpx_file_id]
+    print("Loading file: {}".format(gpx_file_name))
     with open(gpx_file_name) as fh:
         gpx_file = gpxpy.parse(fh)
     return gpx_file
