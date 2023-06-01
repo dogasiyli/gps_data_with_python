@@ -6,6 +6,7 @@ from matplotlib import pyplot as plt
 import pandas as pd
 from pykalman import KalmanFilter
 from gps_utils import haversine
+import datetime as dt
 
 def plot_all_keys(_dict, x_label="Index", y_label="Speed (km/h)", title="Speed Differences", fr_to=None):
     fig, ax = plt.subplots(1, 1, figsize=(12, 6))
@@ -55,6 +56,66 @@ def step_01_load_data(file_id=2):
     print(f"num of tracks={len(gpx_obj.tracks)}")
     segment = gpx_obj.tracks[0].segments[0]
     return gpx_obj, segment
+
+def format_datetime_with_suffix(dt_param):
+    day = dt_param.strftime("%d")
+    suffix = "th" if 11 <= int(day) <= 13 else {1: "st", 2: "nd", 3: "rd"}.get(int(day) % 10, "th")
+    formatted_date = dt_param.strftime(f"%d{suffix} of %B %Y at %H:%M%p.")
+    return formatted_date
+
+def format_time(seconds):
+    minutes, seconds = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    
+    formatted_time = ""
+    
+    if hours > 0:
+        formatted_time += f"{hours}:"
+    if minutes > 0:
+        formatted_time += f"{minutes}'"
+    formatted_time += f'{seconds}"'
+    
+    return formatted_time
+
+def get_activity_durations(td, min_pause_time):
+    # Get the indices of possible pause points
+    possible_pause_idx = np.argwhere(td > min_pause_time).flatten()
+
+    # Calculate the activity time so far at each pause point
+    activity_time = np.cumsum(td)
+
+    # Adjust activity time at pause points
+    activity_time[possible_pause_idx] -= np.cumsum(td)[possible_pause_idx] - np.cumsum(td)[possible_pause_idx - 1]
+
+    # Display the results
+    for pause_idx in possible_pause_idx:
+        print(f"Pause point at index {pause_idx}: Activity time so far: {format_time(activity_time[pause_idx])} seconds")
+    return possible_pause_idx, activity_time
+
+def step_xx0_find_possible_pause_points(segment, min_pause_time=10, verbose=False, plot_level=0):
+    t = [p.time for p in segment.points]
+    training_start_time = format_datetime_with_suffix(t[0])
+    if verbose:
+        print(f"Training started on {training_start_time}")
+
+    td = np.array([(t[idx]-t[idx-1]).seconds for idx in range(1,len(t))])
+    possible_pause_idx, activity_time = get_activity_durations(td, min_pause_time)
+
+    if plot_level>1:
+        tdhist = plt.hist(td, np.unique(td))
+        plt.show()
+        for idx in range(len(tdhist[0])):
+            print(f"{tdhist[0][idx]}:{tdhist[1][idx]}")
+    if plot_level>0:
+        plt.plot(td)
+        plt.title(f"Training:{training_start_time}\nPossible Pause Points")
+        for idx,_td in enumerate(td):
+            if _td>min_pause_time:
+                plt.text(idx, _td, f"{str(format_time(_td))}@\n{str(format_time(activity_time[idx]))}", rotation=30, fontsize=8, horizontalalignment="center", verticalalignment="center")
+        plt.tight_layout()
+        plt.show()
+
+    return possible_pause_idx
 
 def interpolate_point(prev_point, next_point):
     interpolated_point = {
