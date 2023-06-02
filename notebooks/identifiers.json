@@ -1,0 +1,22 @@
+{
+    "basak run 02": 
+    {
+        "file_name": "activity_11238893125_basak02.gpx",
+        "explanation": "this is the second run to compare with the first run"
+    },
+    "basak run 01": 
+    {
+        "file_name": "activity_11231936537_basak01.gpx",
+        "explanation": "this is the first run to compare with the second run"
+    },
+    "my run 01": 
+    {
+        "file_name": "activity_11212422262.gpx",
+        "explanation": "my run on the xth of y at xx:yy"
+    },
+    "my run 02": 
+    {
+        "file_name": "activity_11238879870.gpx",
+        "explanation": "my run on the xth of y at xx:yy"
+    }
+}

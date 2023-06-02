@@ -7,9 +7,10 @@ import pandas as pd
 from pykalman import KalmanFilter
 from gps_utils import haversine
 import datetime as dt
+from itertools import cycle
 
-def plot_all_keys(_dict, x_label="Index", y_label="Speed (km/h)", title="Speed Differences", fr_to=None):
-    fig, ax = plt.subplots(1, 1, figsize=(12, 6))
+def plot_all_keys(_dict, additional_run_info, x_label="Index", y_label="Speed (km/h)", title="Speed Differences", fr_to=None):
+    fig, ax = plt.subplots(1, 1, figsize=(14, 6))
     fib_arr = [2, 3, 5, 7, 9, 11, 14, 17, 20, 23, 26, 30, 34, 38, 42]
     thickness = fib_arr[len(_dict.keys())]
     trans = np.linspace(0.5, 1, len(_dict.keys()))
@@ -19,6 +20,12 @@ def plot_all_keys(_dict, x_label="Index", y_label="Speed (km/h)", title="Speed D
         else:
             ax.plot(_dict[key], label=key, linewidth=thickness, alpha=trans[idx])
         thickness -= 2
+    if "possible_pause_idx" in additional_run_info.keys():
+        for idx in additional_run_info["possible_pause_idx"]:
+            _y = 0.5*_dict[key][idx]+0.5*np.max(_dict[key])
+            ax.plot([idx, idx], [0, _y], 'k--', linewidth=thickness)
+            ax.text(idx, _y, f"{format_time(additional_run_info['pause_durations'][idx])}@{format_time(additional_run_info['activity_time'][idx])}", rotation=90, fontsize=8, 
+                         horizontalalignment="center", verticalalignment="bottom")
 
     ax.legend(bbox_to_anchor=(1.01, 1), borderaxespad=5, fontsize='xx-small')
     ax.set_xlabel(x_label)
@@ -50,9 +57,9 @@ def plot_all_key_difs(_dict, x_label="Index", y_label="Speed (km/h)", title="Spe
     plt.tight_layout(pad=2.5)
     plt.show()
 
-def step_01_load_data(file_id=2):
+def step_01_load_data(file_name):
     gpx_files = list_gpx_files()
-    gpx_obj = load_gpx_file(gpx_files, file_id)
+    gpx_obj = load_gpx_file(gpx_files, file_name)
     print(f"num of tracks={len(gpx_obj.tracks)}")
     segment = gpx_obj.tracks[0].segments[0]
     return gpx_obj, segment
@@ -72,12 +79,12 @@ def format_time(seconds):
     if hours > 0:
         formatted_time += f"{hours}:"
     if minutes > 0:
-        formatted_time += f"{minutes}'"
+        formatted_time += f"{minutes}'".zfill(3)
     formatted_time += f'{seconds}"'
     
     return formatted_time
 
-def get_activity_durations(td, min_pause_time):
+def get_activity_durations(td, min_pause_time, verbose=False):
     # Get the indices of possible pause points
     possible_pause_idx = np.argwhere(td > min_pause_time).flatten()
 
@@ -88,11 +95,12 @@ def get_activity_durations(td, min_pause_time):
     activity_time[possible_pause_idx] -= np.cumsum(td)[possible_pause_idx] - np.cumsum(td)[possible_pause_idx - 1]
 
     # Display the results
-    for pause_idx in possible_pause_idx:
-        print(f"Pause point at index {pause_idx}: Activity time so far: {format_time(activity_time[pause_idx])} seconds")
+    if verbose:
+        for pause_idx in possible_pause_idx:
+            print(f"Pause point at index {pause_idx}: Activity time so far: {format_time(activity_time[pause_idx])} seconds")
     return possible_pause_idx, activity_time
 
-def step_xx0_find_possible_pause_points(segment, min_pause_time=10, verbose=False, plot_level=0):
+def step_xx0_find_possible_pause_points(segment, additional_run_info, min_pause_time=10, verbose=False, plot_level=0):
     t = [p.time for p in segment.points]
     training_start_time = format_datetime_with_suffix(t[0])
     if verbose:
@@ -100,6 +108,7 @@ def step_xx0_find_possible_pause_points(segment, min_pause_time=10, verbose=Fals
 
     td = np.array([(t[idx]-t[idx-1]).seconds for idx in range(1,len(t))])
     possible_pause_idx, activity_time = get_activity_durations(td, min_pause_time)
+    total_activity_time = format_time(activity_time[-1])
 
     if plot_level>1:
         tdhist = plt.hist(td, np.unique(td))
@@ -107,15 +116,35 @@ def step_xx0_find_possible_pause_points(segment, min_pause_time=10, verbose=Fals
         for idx in range(len(tdhist[0])):
             print(f"{tdhist[0][idx]}:{tdhist[1][idx]}")
     if plot_level>0:
-        plt.plot(td)
-        plt.title(f"Training:{training_start_time}\nPossible Pause Points")
+        fig, ax = plt.subplots(1, 1, figsize=(12, 6))
+        ax.plot(td)
+        ax.set_title(f"Training:{training_start_time}\nFor {total_activity_time} -- Possible Pause Points")
+        
+        _tv = {"l":"left", "c":"center", "r":"right", "t":"top", "b":"bottom"}
+        _prev_td = 0
         for idx,_td in enumerate(td):
             if _td>min_pause_time:
-                plt.text(idx, _td, f"{str(format_time(_td))}@\n{str(format_time(activity_time[idx]))}", rotation=30, fontsize=8, horizontalalignment="center", verticalalignment="center")
+                _tdprev = activity_time[idx]-_prev_td
+                allign_code = "cb" if _tdprev>120 else "lb"
+                ax.text(idx, _td, f"{str(format_time(_td))}@\n{str(format_time(activity_time[idx]))}", rotation=30, fontsize=8, 
+                         horizontalalignment=_tv[allign_code[0]], verticalalignment=_tv[allign_code[1]])
+                #print(f"idx({idx}), horizontalalignment({_tv[allign_code[0]]}), verticalalignment({_tv[allign_code[1]]})")
+                _prev_td = activity_time[idx]
+        ax.text(len(td)-1, 2*td[-1], f"total_time@\n{total_activity_time}", rotation=30, fontsize=8, 
+                         horizontalalignment=_tv["c"], verticalalignment=_tv["b"])
+        
         plt.tight_layout()
         plt.show()
 
-    return possible_pause_idx
+        additional_run_info = {
+            "training_start_time": training_start_time,
+            "total_activity_time": total_activity_time,
+            "pause_durations": td,
+            "possible_pause_idx": possible_pause_idx,
+            "activity_time": activity_time
+        }
+
+    return additional_run_info
 
 def interpolate_point(prev_point, next_point):
     interpolated_point = {
@@ -155,7 +184,18 @@ def fix_none_in_speed(speed, segment):
     #         segment.points[idx] = interpolate_point(segment.points[prev_idx], segment.points[next_idx])
     return speed, segment
 
-def step_02_initial_speed(gpx_obj, segment, speed_dict):
+def calc_speed_distance_vincent(segment, verbose=False):
+    speed_vincenty = np.zeros(len(segment.points))
+    distance_vincenty = np.zeros(len(segment.points))
+    for i in range(1, len(segment.points)):
+        x = calc_geodesic(segment.points[i-1],segment.points[i],False)
+        speed_vincenty[i] = x['kmh']
+        distance_vincenty[i] = x['s_geo_len']
+    if verbose:
+        print(f"In {len(segment.points)} points, speed_vincenty={np.mean(speed_vincenty)} and distance_vincenty={np.sum(distance_vincenty)/1000:4.3f} km")
+    return speed_vincenty, distance_vincenty
+
+def step_02_initial_speed(gpx_obj, segment, speed_dict, verbose=False):
     segment.points[0].speed = 0.0
     segment.points[-1].speed = 0.0
     gpx_obj.add_missing_speeds()
@@ -165,12 +205,7 @@ def step_02_initial_speed(gpx_obj, segment, speed_dict):
 
     speed *= 3.6
     speed_dict['speed_0_initial'] = speed
-
-    speed_vincenty = np.zeros_like(speed)
-    for i in range(1, len(segment.points)):
-        x = calc_geodesic(segment.points[i-1],segment.points[i],False)
-        speed_vincenty[i] = x['kmh']
-    
+    speed_vincenty, distance_vincenty = calc_speed_distance_vincent(segment, verbose)
     speed_dict['speed_0_vincenty'] = speed_vincenty
 
 def step_03_segments_to_coords_pd(segment):
@@ -195,7 +230,7 @@ def step_06_get_measurements_from_coords(coords):
     measurements = np.ma.masked_invalid(coords[['lon', 'lat', 'ele']].values)
     return measurements
 
-def step_07_fill_nan_values(coords, measurements, verbose=0):
+def step_07_fill_nan_values(coords, measurements, additional_run_info, verbose=0):
     original_coords_idx = np.argwhere(np.asarray(~coords.ele.isnull().array)).squeeze()
     null_elevation_idx = np.argwhere(np.asarray(coords.ele.isnull().array)).squeeze()
     coords = coords.fillna(method='pad')
@@ -208,6 +243,15 @@ def step_07_fill_nan_values(coords, measurements, verbose=0):
         plt.plot(filled_coords['lon'].values, filled_coords['lat'].values, 'r*', markersize=3, label="filled")
         plt.xticks(rotation=45)
         plt.legend(bbox_to_anchor=(1.05, 1), borderaxespad=5, fontsize='xx-small')
+
+    if "possible_pause_idx" in additional_run_info.keys():
+        for idx in additional_run_info["possible_pause_idx"]:
+            _x = measurements[idx,0]
+            _y = measurements[idx,1]
+            plt.text(_x, _y, f"{format_time(additional_run_info['pause_durations'][idx])}@{format_time(additional_run_info['activity_time'][idx])}", 
+                     rotation=0, fontsize=12, 
+                     horizontalalignment="right", verticalalignment="center")
+                
     return coords, original_coords_idx
 
 def step_08_setup_kalman_filter(measurements):
@@ -257,16 +301,40 @@ def step_09_apply_kalman(kf, measurements):
     state_means, state_vars = kf.smooth(measurements)
     return state_means, state_vars
 
-def step_10_plot_smoothed_vs_measured(state_means, measurements):
-    fig, axs = plt.subplots(3,1, figsize=(12, 12))
+def step_10_plot_smoothed_vs_measured(state_means, measurements, additional_run_info):
+    fig, axs = plt.subplots(3,1, figsize=(21, 15))
     title_str = ["longitude","Latitude","elevation"]
     for i in range(3):
         # Plot for longitude
         axs[i].plot(state_means[:, i], label="Smoothed", linewidth=5)
         axs[i].plot(measurements[:, i], label="Measurements", linewidth=2)
+        if "possible_pause_idx" in additional_run_info.keys():
+            unmasked_idx = np.argwhere(~measurements[:,0].mask).squeeze()
+            _y_min, _y_mean, _y_max = np.min(measurements[unmasked_idx,i]), np.mean(measurements[unmasked_idx,i]), np.max(measurements[unmasked_idx,i])
+            _y_dif = _y_max - _y_min
+            _x_max = np.max(unmasked_idx)
+            axs[i].plot([0, _x_max], [_y_mean, _y_mean], 'g--', linewidth=2, label="Mean")
+            add_min = +0.5
+
+            for idx in additional_run_info["possible_pause_idx"]:
+                _uidx = unmasked_idx[idx]
+                _x = _uidx
+                _y = measurements[_uidx,i]
+                _y_norm = (_y - _y_min) / _y_dif
+                _y_norm = 0.25 + 0.5*np.abs(_y_norm-0.5)
+                _y_norm = add_min*_y_norm
+                _y_text = _y_mean+_y_norm*_y_dif
+                _y_text = _y_mean-_y_norm*_y_dif if np.abs((_y_text-_y)/_y_dif)<0.2 else _y_text
+                _y_text -= add_min*0.2*_y_dif
+                add_min *= -1
+                axs[i].text(_x, _y_text, f"{format_time(additional_run_info['pause_durations'][idx])}@{format_time(additional_run_info['activity_time'][idx])}", 
+                        rotation=20, fontsize=10, horizontalalignment="center", verticalalignment="center")
+                axs[i].plot([_x, _x], [_y, _y_text], 'k--', linewidth=2)
         axs[i].set_title(title_str[i])
         axs[i].legend(bbox_to_anchor=(1.05, 1), borderaxespad=0., fontsize='small')
         axs[i].tick_params(axis='both', which='major', labelsize='small')
+
+
     plt.tight_layout(pad=2.5)
     # Move the legends to the right of the plot
     plt.show()
