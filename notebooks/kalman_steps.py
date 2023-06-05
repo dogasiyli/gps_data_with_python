@@ -6,14 +6,13 @@ from matplotlib import pyplot as plt
 import pandas as pd
 from pykalman import KalmanFilter
 from gps_utils import haversine
-import datetime as dt
-from itertools import cycle
+import seaborn as sns
 
 def plot_all_keys(_dict, additional_run_info, x_label="Index", y_label="Speed (km/h)", title="Speed Differences", fr_to=None):
     fig, ax = plt.subplots(1, 1, figsize=(14, 6))
     fib_arr = [2, 3, 5, 7, 9, 11, 14, 17, 20, 23, 26, 30, 34, 38, 42]
     thickness = fib_arr[len(_dict.keys())]
-    trans = np.linspace(0.5, 1, len(_dict.keys()))
+    trans = np.linspace(0.25, 0.75, len(_dict.keys()))
     for idx, key in enumerate(_dict.keys()):
         if fr_to is not None:
             ax.plot(_dict[key][fr_to[0]:fr_to[1]], label=key, linewidth=thickness, alpha=trans[idx])
@@ -57,6 +56,20 @@ def plot_all_key_difs(_dict, x_label="Index", y_label="Speed (km/h)", title="Spe
     plt.tight_layout(pad=2.5)
     plt.show()
 
+def plot_time_dif_counts(coords):
+    time_delta = np.abs(np.diff(coords.index).astype('timedelta64[s]').astype(int))
+    uniqe_time_delta = np.unique(time_delta, return_index=True, return_counts=True)
+    ut_df = pd.DataFrame({'time_delta': uniqe_time_delta[0], 'count': uniqe_time_delta[2]})
+
+    ut_df['index'] = 0  # Set all index values to 0
+
+    plt.figure(figsize=(18, 2))
+    pivot_df = ut_df.pivot(index="time_delta", columns="index", values="count").T
+    sns.heatmap(pivot_df, annot=True, fmt="4.0f", annot_kws={"horizontalalignment": "center"}, cmap='coolwarm')
+    plt.xlabel("Time Delta")
+    plt.ylabel("Count")
+    plt.show()
+
 def step_01_load_data(file_name):
     gpx_files = list_gpx_files()
     gpx_obj = load_gpx_file(gpx_files, file_name)
@@ -84,21 +97,73 @@ def format_time(seconds):
     
     return formatted_time
 
-def get_activity_durations(td, min_pause_time, verbose=False):
+def create_active_pause_df(td, min_pause_time):
     # Get the indices of possible pause points
+    td = np.array(list(td)+list([min_pause_time+1])).copy()
     possible_pause_idx = np.argwhere(td > min_pause_time).flatten()
 
     # Calculate the activity time so far at each pause point
     activity_time = np.cumsum(td)
 
-    # Adjust activity time at pause points
-    activity_time[possible_pause_idx] -= np.cumsum(td)[possible_pause_idx] - np.cumsum(td)[possible_pause_idx - 1]
+    # Create active_df DataFrame
+    active_data = []
+    cum_td = np.cumsum(td)
+    for i, pause_idx in enumerate(possible_pause_idx):
+        start_idx = 0 if i == 0 else possible_pause_idx[i-1]
+        end_idx = pause_idx
+        duration = cum_td[end_idx-1]- cum_td[start_idx] if i>0 else cum_td[end_idx-1]
+        init_second = cum_td[start_idx] if start_idx>0 else 0
+        final_second = cum_td[end_idx-1] if end_idx < len(td) else cum_td[-1]
+        upuntilnow = duration if i==0 else np.sum(np.array(active_data)[:,3])+duration
+        active_data.append([i, start_idx, end_idx-1, duration, init_second, final_second, upuntilnow])
+
+    active_df = pd.DataFrame(active_data, columns=['id', 'first_idx', 'last_idx', 'duration', 'init_second', 'final_second', 'tot_activity_time'])
+
+    # Create pause_df DataFrame
+    pause_data = []
+    pause_idx = np.array(active_df['first_idx'][1:])
+    duration = np.array(active_df['init_second'][1:]) - np.array(active_df['final_second'][:-1])
+    init_second = np.array(active_df['final_second'][:-1])
+    final_second = np.array(active_df['init_second'][1:])
+
+    pause_data = list(zip(range(len(pause_idx)), pause_idx, duration, init_second, final_second))
+    pause_df = pd.DataFrame(pause_data, columns=['id', 'idx', 'duration', 'init_second', 'final_second'])
+
+    return activity_time, possible_pause_idx, active_df, pause_df
+
+'''
+td = np.array([4, 4, 3, 5, 2, 1, 2,3,5,2,1,2,3,2,6,2,1,3])
+min_pause_time = 4
+possible_pause_idx, activity_time, active_df, pause_df = get_activity_durations(td, min_pause_time, verbose=1)
+:
+Pause point at index 3: Activity time so far: 16" seconds or 11" seconds
+Pause point at index 8: Activity time so far: 29" seconds or 19" seconds
+Pause point at index 14: Activity time so far: 45" seconds or 29" seconds
+Pause point at index 18: Activity time so far: 56" seconds or 35" seconds
+acttive df = 
+   id  first_idx  last_idx  duration  init_second  final_second  tot_activity_time
+0   0          0         2        11            0            11                 11
+1   1          3         7         8           16            24                 19
+2   2          8        13        10           29            39                 29
+3   3         14        17         6           45            51                 35
+pause df = 
+   id  idx  duration  init_second  final_second
+0   0    3         5           11            16
+1   1    8         5           24            29
+2   2   14         6           39            45
+'''
+def get_activity_durations(td, min_pause_time, verbose=False):
+    # Create active_df and pause_df DataFrames
+    activity_time, possible_pause_idx, active_df, pause_df = create_active_pause_df(td, min_pause_time)
 
     # Display the results
     if verbose:
-        for pause_idx in possible_pause_idx:
-            print(f"Pause point at index {pause_idx}: Activity time so far: {format_time(activity_time[pause_idx])} seconds")
-    return possible_pause_idx, activity_time
+        for i, pause_idx in enumerate(possible_pause_idx):
+            print(f"Pause point at index {pause_idx}: Activity time so far: {format_time(active_df['tot_activity_time'][i])} seconds")
+
+        print(f"acttive df = \n{active_df}")
+        print(f"pause df = \n{pause_df}")
+    return possible_pause_idx, activity_time, active_df, pause_df
 
 def step_xx0_find_possible_pause_points(segment, additional_run_info, min_pause_time=10, verbose=False, plot_level=0):
     t = [p.time for p in segment.points]
@@ -107,8 +172,8 @@ def step_xx0_find_possible_pause_points(segment, additional_run_info, min_pause_
         print(f"Training started on {training_start_time}")
 
     td = np.array([(t[idx]-t[idx-1]).seconds for idx in range(1,len(t))])
-    possible_pause_idx, activity_time = get_activity_durations(td, min_pause_time)
-    total_activity_time = format_time(activity_time[-1])
+    possible_pause_idx, activity_time, active_df, pause_df = get_activity_durations(td, min_pause_time, verbose=verbose)
+    total_activity_time = format_time(active_df['tot_activity_time'].iloc[-1])
 
     if plot_level>1:
         tdhist = plt.hist(td, np.unique(td))
@@ -141,7 +206,9 @@ def step_xx0_find_possible_pause_points(segment, additional_run_info, min_pause_
             "total_activity_time": total_activity_time,
             "pause_durations": td,
             "possible_pause_idx": possible_pause_idx,
-            "activity_time": activity_time
+            "activity_time": activity_time,
+            "active_df": active_df, 
+            "pause_df": pause_df
         }
 
     return additional_run_info
@@ -218,17 +285,77 @@ def step_03_segments_to_coords_pd(segment):
     coords.set_index('time', inplace=True)
     return coords
 
-def step_04_round_time(coords):
-    coords.index = np.round(coords.index.astype(np.int64), -9).astype('datetime64[ns]')
-    return
+def add_index_noise(_df, min_noise=200, max_noise=300):
+    # Generate random noise for each element in the index
+    min_noise = pd.Timedelta(milliseconds=min_noise)
+    max_noise = pd.Timedelta(milliseconds=max_noise)
+    noise = np.random.uniform(min_noise.total_seconds(), max_noise.total_seconds(), size=len(_df))
+    noise = pd.to_timedelta(noise, unit='s')
+
+    # Add the noise to the index
+    _df.index = _df.index + noise
+    _df.index.name = 'time'
+
+    return _df
+
+def step_04_round_time(_df, frequency='1s'):
+    rounded_index = _df.index.ceil(frequency)
+    _df.index = rounded_index
+    _df.index.name = 'time'
+    return _df
 
 def step_05_resample(coords, freq='1s'):
     coords = coords.resample(freq).mean()
     return coords
 
-def step_06_get_measurements_from_coords(coords):
-    measurements = np.ma.masked_invalid(coords[['lon', 'lat', 'ele']].values)
-    return measurements
+def step_06_get_measurements_from_coords(coords, additional_run_info):
+    possible_pause_idx = additional_run_info['possible_pause_idx']
+    measurements = []
+    df_info = pd.DataFrame(columns=['id', 'start_idx', 'end_idx', 'start_time', 'end_time',
+                                    'unmasked_count', 'masked_count', 'total_count', 'time_diff'])
+
+    all_measurements = np.ma.masked_invalid(coords[['lon']].values)
+    unmasked_indices = np.nonzero(~all_measurements.mask)[0]
+
+    start_idx = 0
+    for i, end_idx in enumerate(possible_pause_idx):
+        fr, to = unmasked_indices[start_idx], unmasked_indices[end_idx]
+        measurement = np.ma.masked_invalid(coords[['lon', 'lat', 'ele']].values[fr:to+1])
+        measurements.append(measurement)
+
+        start_time = coords.index[start_idx]
+        end_time = coords.index[end_idx - 1]
+        unmasked_count = np.count_nonzero(~measurement.mask)
+        masked_count = np.count_nonzero(measurement.mask)
+        total_count = unmasked_count + masked_count
+
+        if i < len(possible_pause_idx) - 1:
+            next_start_time = coords.index[end_idx]
+            time_diff = next_start_time - end_time
+        else:
+            time_diff = pd.NaT
+
+        df_info.loc[i] = [i, start_idx, end_idx - 1, start_time, end_time, unmasked_count,
+                          masked_count, total_count, time_diff]
+
+        start_idx = end_idx +1 
+
+    # Append the last measurement from the last index to the end of the DataFrame
+    measurement = np.ma.masked_invalid(coords[['lon', 'lat', 'ele']].values[start_idx:])
+    measurements.append(measurement)
+
+    start_time = coords.index[start_idx]
+    end_time = coords.index[-1]
+    unmasked_count = np.count_nonzero(~measurement.mask)
+    masked_count = np.count_nonzero(measurement.mask)
+    total_count = unmasked_count + masked_count
+    time_diff = pd.NaT
+
+    df_info.loc[len(possible_pause_idx)] = [len(possible_pause_idx), start_idx, len(coords) - 1,
+                                             start_time, end_time, unmasked_count,
+                                             masked_count, total_count, time_diff]
+
+    return measurements, df_info
 
 def step_07_fill_nan_values(coords, measurements, additional_run_info, verbose=0):
     original_coords_idx = np.argwhere(np.asarray(~coords.ele.isnull().array)).squeeze()
