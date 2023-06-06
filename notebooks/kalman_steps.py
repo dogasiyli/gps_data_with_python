@@ -11,6 +11,7 @@ from pykalman import KalmanFilter
 from gps_utils import haversine
 import seaborn as sns
 from adjustText import adjust_text
+from datetime import datetime, timedelta
 
 def print_known_info(file_identifier, wanted_info):
     for k in wanted_info:
@@ -495,8 +496,29 @@ def step_10_plot_smoothed_vs_measured(state_means, measurements, measurements_df
     # Move the legends to the right of the plot
     plt.show()
 
-def step_11_15_22_update_coords(state_means, coords, segment, original_coords_idx):
-    coords.iloc[:, [2,1,3]] = state_means[:,:3]
+def calc_distance_vincent(state_means, time_interval_in_seconds, verbose=False):
+    speed_vincenty = np.zeros(len(state_means))
+    distance_vincenty = np.zeros(len(state_means))
+    for j, s in enumerate(state_means):
+        t = datetime.now()
+        p1 = {'timestamp':t.timestamp(),'coords':{'latitude':s[0,1],'longitude':s[0,0]}}    
+        for i in range(1,len(s)):
+            p2 = {'timestamp':t.timestamp() + i*time_interval_in_seconds*1000,'coords':{'latitude':s[i,1],'longitude':s[i,0]}}    
+            x = calc_geodesic(p1,p2,False)
+            p1 = p2
+            speed_vincenty[j] += x['kmh']
+            distance_vincenty[j] += x['s_geo_len']
+        speed_vincenty[j] /= len(s)
+    if verbose:
+        print(f"In {len(state_means)} blocks, speed_vincenty={np.mean(speed_vincenty)} and distance_vincenty={np.sum(distance_vincenty)/1000:4.3f} km")
+    return speed_vincenty, distance_vincenty
+
+def step_11_15_22_update_coords(state_means, coords, segment, original_coords_idx, measurements_df_info):
+    for i in range(len(state_means)):
+        start_idx = measurements_df_info['start_idx'][i]
+        end_idx = measurements_df_info['end_idx'][i]
+        print(f"{i:02d}: filled from {start_idx} to {end_idx}")
+        coords.iloc[start_idx:end_idx, [2,1,3]] = state_means[i][:,:3]
     orig_coords = coords.iloc[original_coords_idx].set_index('idx')
     for i, p in enumerate(segment.points):
         p.speed = None
