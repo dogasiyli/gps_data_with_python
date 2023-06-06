@@ -1,5 +1,6 @@
 import math
 from datetime import datetime
+from gpxpy.gpx import GPXTrackPoint
 
 def calc_pace_from_kmh(kmh, verbose=False):
     # Calculate pace in minutes per kilometer
@@ -34,7 +35,15 @@ def deg_dms(direction_in_degrees):
 # Distance/bearing between two points (inverse solution)
 # @ https://www.movable-type.co.uk/scripts/latlong-vincenty.html
 def calc_geodesic(p1, p2, verbose=False):
-    try:
+    if isinstance(p1, GPXTrackPoint):
+        t1 = p1.time
+        t2 = p2.time
+        time_diff = (t2-t1).total_seconds()
+        φ1 = math.radians(p1.latitude)
+        φ2 = math.radians(p2.latitude)
+        λ1 = math.radians(p1.longitude)
+        λ2 = math.radians(p2.longitude)   
+    elif isinstance(p1, dict):
         timestamp1 = p1['timestamp']
         timestamp2 = p2['timestamp']
         time_diff = (timestamp2 - timestamp1)/1000
@@ -42,14 +51,8 @@ def calc_geodesic(p1, p2, verbose=False):
         φ2 = math.radians(p2['coords']['latitude'])
         λ1 = math.radians(p1['coords']['longitude'])
         λ2 = math.radians(p2['coords']['longitude'])
-    except:
-        t1 = p1.time
-        t2 = p2.time
-        time_diff = (t2-t1).total_seconds()
-        φ1 = math.radians(p1.latitude)
-        φ2 = math.radians(p2.latitude)
-        λ1 = math.radians(p1.longitude)
-        λ2 = math.radians(p2.longitude)        
+    else:
+        print("p1 is neither GPXTrackPoint nor a dictionary")
 
     if verbose:
         print(f"Time Difference: {time_diff} seconds")

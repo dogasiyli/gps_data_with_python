@@ -2,12 +2,28 @@
     "basak run 02": 
     {
         "file_name": "activity_11238893125_basak02.gpx",
-        "explanation": "this is the second run to compare with the first run"
+        "explanation": "run of basak at 31st.",
+        "run_date": "2013-12-31",
+        "active_time": "1:04:17",
+        "total_time": "1:10:51",
+        "total_distance": "10.00km",
+        "total_elevation": "173m",
+        "max_elevation": "102m",
+        "fastest_split": "5:49/km",
+        "avg_pace": "7:05/km"
     },
     "basak run 01": 
     {
         "file_name": "activity_11231936537_basak01.gpx",
-        "explanation": "this is the first run to compare with the second run"
+        "explanation": "run of basak at 30th.",
+        "run_date": "2013-12-30",
+        "active_time": "1:24:21",
+        "total_time": "1:46:33",
+        "total_distance": "14.00km",
+        "total_elevation": "237m",
+        "max_elevation": "99m",
+        "fastest_split": "5:18/km",
+        "avg_pace": "6:01/km"
     },
     "my run 01": 
     {

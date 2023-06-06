@@ -1,12 +1,23 @@
 import time
+from turtle import width
 import numpy as np
+from pyparsing import alphanums
 from helpers import list_gpx_files, load_gpx_file, get_indices
 from geo_funcs import calc_geodesic
 from matplotlib import pyplot as plt
+import matplotlib.cm as cm
 import pandas as pd
 from pykalman import KalmanFilter
 from gps_utils import haversine
 import seaborn as sns
+from adjustText import adjust_text
+
+def print_known_info(file_identifier, wanted_info):
+    for k in wanted_info:
+        if k in file_identifier.keys():
+            print(f"known {k}: {file_identifier[k]}")
+        else:
+            print(f"unknown {k}")
 
 def plot_all_keys(_dict, additional_run_info, x_label="Index", y_label="Speed (km/h)", title="Speed Differences", fr_to=None):
     fig, ax = plt.subplots(1, 1, figsize=(14, 6))
@@ -20,10 +31,11 @@ def plot_all_keys(_dict, additional_run_info, x_label="Index", y_label="Speed (k
             ax.plot(_dict[key], label=key, linewidth=thickness, alpha=trans[idx])
         thickness -= 2
     if "possible_pause_idx" in additional_run_info.keys():
-        for idx in additional_run_info["possible_pause_idx"]:
+        for _i in range(len(additional_run_info['pause_df'])):
+            idx = additional_run_info["possible_pause_idx"][_i]
             _y = 0.5*_dict[key][idx]+0.5*np.max(_dict[key])
             ax.plot([idx, idx], [0, _y], 'k--', linewidth=thickness)
-            ax.text(idx, _y, f"{format_time(additional_run_info['pause_durations'][idx])}@{format_time(additional_run_info['activity_time'][idx])}", rotation=90, fontsize=8, 
+            ax.text(idx, _y, f"{format_time(additional_run_info['pause_df']['duration'][_i])}@{format_time(additional_run_info['active_df']['tot_activity_time'][_i])}", rotation=90, fontsize=8, 
                          horizontalalignment="center", verticalalignment="bottom")
 
     ax.legend(bbox_to_anchor=(1.01, 1), borderaxespad=5, fontsize='xx-small')
@@ -309,158 +321,171 @@ def step_05_resample(coords, freq='1s'):
     return coords
 
 def step_06_get_measurements_from_coords(coords, additional_run_info):
-    possible_pause_idx = additional_run_info['possible_pause_idx']
     measurements = []
-    df_info = pd.DataFrame(columns=['id', 'start_idx', 'end_idx', 'start_time', 'end_time',
-                                    'unmasked_count', 'masked_count', 'total_count', 'time_diff'])
+    measurements_df_info = pd.DataFrame(columns=['id', 'start_idx', 'end_idx', 'start_time', 'end_time',
+                                    'unmasked_count', 'masked_count', 'total_count', 'active_seconds'])
 
     all_measurements = np.ma.masked_invalid(coords[['lon']].values)
     unmasked_indices = np.nonzero(~all_measurements.mask)[0]
 
     start_idx = 0
-    for i, end_idx in enumerate(possible_pause_idx):
-        fr, to = unmasked_indices[start_idx], unmasked_indices[end_idx]
-        measurement = np.ma.masked_invalid(coords[['lon', 'lat', 'ele']].values[fr:to+1])
+    active_df = additional_run_info['active_df']
+    block_cnt = len(active_df)
+    for i in range(block_cnt):
+        fr = active_df['first_idx'][i] + int(i!=0)
+        to = min(active_df['last_idx'][i]+1, len(unmasked_indices)-1)
+        start_idx, end_idx = unmasked_indices[fr], unmasked_indices[to]
+        measurement = np.ma.masked_invalid(coords[['lon', 'lat', 'ele']].values[start_idx:end_idx])
         measurements.append(measurement)
 
         start_time = coords.index[start_idx]
-        end_time = coords.index[end_idx - 1]
-        unmasked_count = np.count_nonzero(~measurement.mask)
-        masked_count = np.count_nonzero(measurement.mask)
+        end_time = coords.index[end_idx]
+        unmasked_count = np.count_nonzero(~measurement.mask)//3
+        masked_count = np.count_nonzero(measurement.mask)//3
         total_count = unmasked_count + masked_count
 
-        if i < len(possible_pause_idx) - 1:
-            next_start_time = coords.index[end_idx]
-            time_diff = next_start_time - end_time
-        else:
-            time_diff = pd.NaT
+        measurements_df_info.loc[i] = [i, start_idx, end_idx, start_time, end_time, unmasked_count,
+                          masked_count, total_count, active_df['duration'][i]]
 
-        df_info.loc[i] = [i, start_idx, end_idx - 1, start_time, end_time, unmasked_count,
-                          masked_count, total_count, time_diff]
+    return measurements, measurements_df_info
 
-        start_idx = end_idx +1 
-
-    # Append the last measurement from the last index to the end of the DataFrame
-    measurement = np.ma.masked_invalid(coords[['lon', 'lat', 'ele']].values[start_idx:])
-    measurements.append(measurement)
-
-    start_time = coords.index[start_idx]
-    end_time = coords.index[-1]
-    unmasked_count = np.count_nonzero(~measurement.mask)
-    masked_count = np.count_nonzero(measurement.mask)
-    total_count = unmasked_count + masked_count
-    time_diff = pd.NaT
-
-    df_info.loc[len(possible_pause_idx)] = [len(possible_pause_idx), start_idx, len(coords) - 1,
-                                             start_time, end_time, unmasked_count,
-                                             masked_count, total_count, time_diff]
-
-    return measurements, df_info
-
-def step_07_fill_nan_values(coords, measurements, additional_run_info, verbose=0):
+def step_07_fill_nan_values(coords, measurements, measurements_df_info, verbose=0):
     original_coords_idx = np.argwhere(np.asarray(~coords.ele.isnull().array)).squeeze()
     null_elevation_idx = np.argwhere(np.asarray(coords.ele.isnull().array)).squeeze()
     coords = coords.fillna(method='pad')
     filled_coords = coords.iloc[null_elevation_idx]
+
+    # cmap = cm.get_cmap('cool')  # Defined colormap
+    # # Generate a color array based on the length of X using the defined colormap
+    # mcolors = cmap(np.linspace(0, 1, len(measurements)))
+    mcolors = np.random.rand(len(measurements), 4) * 0.75 + 0.25
+    mcolors[:, 3] = 1.0
+
     if verbose>1:
         print(f"num of filled coords={len(null_elevation_idx)} in {len(coords.ele)}")
     if verbose:
-        fig = plt.figure(figsize=(12,12))
-        plt.plot(measurements[:,0], measurements[:,1], 'bo', markersize=5, label="original")
-        plt.plot(filled_coords['lon'].values, filled_coords['lat'].values, 'r*', markersize=3, label="filled")
+        fig, ax = plt.subplots(figsize=(12, 12), facecolor='purple')
+        ax.set_facecolor('black')
+        for i_block, m in enumerate(measurements):
+            ip = (i_block / len(measurements))
+            um = np.ma.compress_rows(m)
+            ax.plot(um[:, 0], um[:, 1], color=mcolors[i_block], alpha=0.75+0.25*ip, linestyle='-', linewidth=3+10*ip)
+        ax.plot(filled_coords['lon'].values, filled_coords['lat'].values, '.', color='yellow', markersize=4, label="filled")
         plt.xticks(rotation=45)
-        plt.legend(bbox_to_anchor=(1.05, 1), borderaxespad=5, fontsize='xx-small')
+        lg = plt.legend(bbox_to_anchor=(1.05, 1), borderaxespad=5, fontsize='xx-small', facecolor='black')
+        for t in lg.get_texts():
+            t.set_color('white')  # Set the desired text color
 
-    if "possible_pause_idx" in additional_run_info.keys():
-        for idx in additional_run_info["possible_pause_idx"]:
-            _x = measurements[idx,0]
-            _y = measurements[idx,1]
-            plt.text(_x, _y, f"{format_time(additional_run_info['pause_durations'][idx])}@{format_time(additional_run_info['activity_time'][idx])}", 
-                     rotation=0, fontsize=12, 
-                     horizontalalignment="right", verticalalignment="center")
+    if measurements_df_info is not None:
+        labels = []
+        for i_block in range(len(measurements)):
+            m = measurements[i_block]
+            active_time = format_time(measurements_df_info['active_seconds'][i_block])
+            _x = np.nanmean(m[:,0])
+            _y = np.nanmean(m[:,1])
+            labels.append(plt.text(_x, _y, f"{active_time}@{i_block+1:02d}", color=mcolors[i_block]))
+        adjust_text(labels)
                 
     return coords, original_coords_idx
 
-def step_08_setup_kalman_filter(measurements):
+def step_08_setup_kalman_filter(measurements, time_interval_in_seconds):
     Q = np.array([[  3.17720723e-09,  -1.56389148e-09,  -2.41793770e-07,
-                 2.29258935e-09,  -3.17260647e-09,  -2.89201471e-07],
-              [  1.56687815e-09,   3.16555076e-09,   1.19734906e-07,
-                 3.17314157e-09,   2.27469595e-09,  -2.11189940e-08],
-              [ -5.13624053e-08,   2.60171362e-07,   4.62632068e-01,
-                 1.00082746e-07,   2.81568920e-07,   6.99461902e-05],
-              [  2.98805710e-09,  -8.62315114e-10,  -1.90678253e-07,
-                 5.58468140e-09,  -5.46272629e-09,  -5.75557899e-07],
-              [  8.66285671e-10,   2.97046913e-09,   1.54584155e-07,
-                 5.46269262e-09,   5.55161528e-09,   5.67122163e-08],
-              [ -9.24540217e-08,   2.09822077e-07,   7.65126136e-05,
-                 4.58344911e-08,   5.74790902e-07,   3.89895992e-04]])
+                      2.29258935e-09,  -3.17260647e-09,  -2.89201471e-07],
+                  [  1.56687815e-09,   3.16555076e-09,   1.19734906e-07,
+                      3.17314157e-09,   2.27469595e-09,  -2.11189940e-08],
+                  [ -5.13624053e-08,   2.60171362e-07,   4.62632068e-01,
+                      1.00082746e-07,   2.81568920e-07,   6.99461902e-05],
+                  [  2.98805710e-09,  -8.62315114e-10,  -1.90678253e-07,
+                      5.58468140e-09,  -5.46272629e-09,  -5.75557899e-07],
+                  [  8.66285671e-10,   2.97046913e-09,   1.54584155e-07,
+                      5.46269262e-09,   5.55161528e-09,   5.67122163e-08],
+                  [ -9.24540217e-08,   2.09822077e-07,   7.65126136e-05,
+                      4.58344911e-08,   5.74790902e-07,   3.89895992e-04]])
     Q = 0.5*(Q + Q.T) # assure symmetry
     # Careful here, expectation maximation takes several hours!
     # kf = kf.em(measurements, n_iter=1000)
     # or just run this instead of the one above (it is the same result)
+    t = time_interval_in_seconds
     kf_dict = {
-    "F" : np.array([[1, 0, 0, 1, 0, 0],
-                [0, 1, 0, 0, 1, 0],
-                [0, 0, 1, 0, 0, 1],
-                [0, 0, 0, 1, 0, 0],
-                [0, 0, 0, 0, 1, 0],
-                [0, 0, 0, 0, 0, 1]]),
+    "F" : np.array([[1, 0, 0, t, 0, 0],
+                    [0, 1, 0, 0, t, 0],
+                    [0, 0, 1, 0, 0, t],
+                    [0, 0, 0, 1, 0, 0],
+                    [0, 0, 0, 0, 1, 0],
+                    [0, 0, 0, 0, 0, 1]]),
     "H": np.array([[1, 0, 0, 0, 0, 0],
-                [0, 1, 0, 0, 0, 0],
-                [0, 0, 1, 0, 0, 0]]),
+                   [0, 1, 0, 0, 0, 0],
+                   [0, 0, 1, 0, 0, 0]]),
     "R": np.diag([1e-4, 1e-4, 100])**2,
     "Q": Q,
-    "initial_state_mean" : np.hstack([measurements[0, :], 3*[0.]]),# works initial_state_covariance = np.diag([1e-3, 1e-3, 100, 1e-4, 1e-4, 1e-4])**2
     "initial_state_covariance": np.diag([1e-4, 1e-4, 50, 1e-6, 1e-6, 1e-6])**2
     }
 
-    kf = KalmanFilter(transition_matrices=kf_dict["F"], 
-                    observation_matrices=kf_dict["H"], 
-                    observation_covariance=kf_dict["R"],
-                    initial_state_mean=kf_dict["initial_state_mean"],
-                    initial_state_covariance=kf_dict["initial_state_covariance"],
-                    em_vars=['transition_covariance'])
-    kf.transition_covariance = kf_dict["Q"]
+    kf_list = []
+    for m in measurements:
+        kf = KalmanFilter(transition_matrices=kf_dict["F"].copy(), 
+                        observation_matrices=kf_dict["H"].copy(), 
+                        observation_covariance=kf_dict["R"].copy(), 
+                        initial_state_mean=np.hstack([m[0, :], 3*[0.]]), # works initial_state_covariance = np.diag([1e-3, 1e-3, 100, 1e-4, 1e-4, 1e-4])**2
+                        initial_state_covariance=kf_dict["initial_state_covariance"].copy(), 
+                        em_vars=['transition_covariance'].copy())
+        kf.transition_covariance = kf_dict["Q"].copy()
+        kf_list.append(kf)
 
-    return kf, kf_dict
+    return kf_list, kf_dict
 
-def step_09_apply_kalman(kf, measurements):
-    state_means, state_vars = kf.smooth(measurements)
+def step_09_apply_kalman(kf_list, measurements):
+    state_means, state_vars = [], []
+    for i, (kf, m) in enumerate(zip(kf_list, measurements)):
+        _state_means, _state_vars = kf.smooth(m)
+        state_means.append(_state_means)
+        state_vars.append(_state_vars)
     return state_means, state_vars
 
-def step_10_plot_smoothed_vs_measured(state_means, measurements, additional_run_info):
-    fig, axs = plt.subplots(3,1, figsize=(21, 15))
+def get_measurement_limits(measurements):
+    min_values = np.empty((len(measurements), measurements[0].shape[1]))
+    max_values = np.empty((len(measurements), measurements[0].shape[1]))
+    for i, arr in enumerate(measurements):
+        min_values[i,:] = np.array(np.nanmin(arr, axis=0))  # Calculate the minimum values for each dimension
+        max_values[i,:] = np.array(np.nanmax(arr, axis=0)) # Calculate the maximum values for each dimension
+    return np.min(min_values, axis=0), np.max(max_values, axis=0)
+
+def step_10_plot_smoothed_vs_measured(state_means, measurements, measurements_df_info):
+    fig, axs = plt.subplots(3,1, figsize=(21, 18))
     title_str = ["longitude","Latitude","elevation"]
-    for i in range(3):
+    mcolors = np.random.rand(len(measurements), 4) * 0.75 + 0.25
+    mcolors[:, 3] = 1.0
+    min_values, max_values = get_measurement_limits(measurements)
+    for i_var in range(3):
         # Plot for longitude
-        axs[i].plot(state_means[:, i], label="Smoothed", linewidth=5)
-        axs[i].plot(measurements[:, i], label="Measurements", linewidth=2)
-        if "possible_pause_idx" in additional_run_info.keys():
-            unmasked_idx = np.argwhere(~measurements[:,0].mask).squeeze()
-            _y_min, _y_mean, _y_max = np.min(measurements[unmasked_idx,i]), np.mean(measurements[unmasked_idx,i]), np.max(measurements[unmasked_idx,i])
-            _y_dif = _y_max - _y_min
-            _x_max = np.max(unmasked_idx)
-            axs[i].plot([0, _x_max], [_y_mean, _y_mean], 'g--', linewidth=2, label="Mean")
-            add_min = +0.5
-
-            for idx in additional_run_info["possible_pause_idx"]:
-                _uidx = unmasked_idx[idx]
-                _x = _uidx
-                _y = measurements[_uidx,i]
-                _y_norm = (_y - _y_min) / _y_dif
-                _y_norm = 0.25 + 0.5*np.abs(_y_norm-0.5)
-                _y_norm = add_min*_y_norm
-                _y_text = _y_mean+_y_norm*_y_dif
-                _y_text = _y_mean-_y_norm*_y_dif if np.abs((_y_text-_y)/_y_dif)<0.2 else _y_text
-                _y_text -= add_min*0.2*_y_dif
-                add_min *= -1
-                axs[i].text(_x, _y_text, f"{format_time(additional_run_info['pause_durations'][idx])}@{format_time(additional_run_info['activity_time'][idx])}", 
-                        rotation=20, fontsize=10, horizontalalignment="center", verticalalignment="center")
-                axs[i].plot([_x, _x], [_y, _y_text], 'k--', linewidth=2)
-        axs[i].set_title(title_str[i])
-        axs[i].legend(bbox_to_anchor=(1.05, 1), borderaxespad=0., fontsize='small')
-        axs[i].tick_params(axis='both', which='major', labelsize='small')
-
+        #labels = []
+        _x_add = 0
+        for j_block, (s, m) in enumerate(zip(state_means, measurements)):
+            x_fr, x_to = _x_add, _x_add+len(m)
+            axs[i_var].plot(range(x_fr, x_to), s[:, i_var], color='white', alpha=0.5, linewidth=10)
+            label_str=f"block {j_block+1}" if measurements_df_info is None else f"b({1+j_block:02d})-{format_time(measurements_df_info['active_seconds'][j_block])}" 
+            u_idx = np.argwhere(~m[:, i_var].mask).squeeze()
+            axs[i_var].plot(_x_add + u_idx, m[u_idx, i_var], 'o', color=mcolors[j_block], alpha=1.0, markersize=3, label=label_str)
+            axs[i_var].set_facecolor('black')
+            axs[i_var].grid(False)
+            
+            if measurements_df_info is not None:
+                unmasked_idx = np.argwhere(~m[:, i_var].mask).squeeze()
+                unmasked_x = unmasked_idx + x_fr
+                unmasked_y = m[unmasked_idx, i_var]
+                _x_median = np.nanmedian(unmasked_x)
+                _y_median = np.nanmedian(unmasked_y)
+                # vertical line from zero to the block mean
+                axs[i_var].plot([_x_median, _x_median], [min_values[i_var], _y_median], 'g--', linewidth=2)
+                # text of active time and block number 
+                active_time = format_time(measurements_df_info['active_seconds'][j_block])
+                axs[i_var].text(_x_median, _y_median, f"{active_time}@{j_block+1:02d}", color=mcolors[j_block], fontsize='small',
+                                horizontalalignment='center', verticalalignment='bottom', rotation=90)
+            _x_add += len(m)
+        #adjust_text(labels)                
+        axs[i_var].set_title(title_str[i_var])
+        axs[i_var].legend(bbox_to_anchor=(1.05, 1), borderaxespad=0., fontsize='small')
+        axs[i_var].tick_params(axis='both', which='major', labelsize='small')
 
     plt.tight_layout(pad=2.5)
     # Move the legends to the right of the plot
