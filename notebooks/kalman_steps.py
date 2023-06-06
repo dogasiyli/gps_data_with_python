@@ -127,7 +127,7 @@ def create_active_pause_df(td, min_pause_time):
         init_second = cum_td[start_idx] if start_idx>0 else 0
         final_second = cum_td[end_idx-1] if end_idx < len(td) else cum_td[-1]
         upuntilnow = duration if i==0 else np.sum(np.array(active_data)[:,3])+duration
-        active_data.append([i, start_idx, end_idx-1, duration, init_second, final_second, upuntilnow])
+        active_data.append([i, start_idx - 2*(i>1), end_idx-1-2*(i>0), duration, init_second, final_second, upuntilnow])
 
     active_df = pd.DataFrame(active_data, columns=['id', 'first_idx', 'last_idx', 'duration', 'init_second', 'final_second', 'tot_activity_time'])
 
@@ -389,19 +389,6 @@ def step_07_fill_nan_values(coords, measurements, measurements_df_info, verbose=
     return coords, original_coords_idx
 
 def step_08_setup_kalman_filter(measurements, time_interval_in_seconds):
-    Q = np.array([[  3.17720723e-09,  -1.56389148e-09,  -2.41793770e-07,
-                      2.29258935e-09,  -3.17260647e-09,  -2.89201471e-07],
-                  [  1.56687815e-09,   3.16555076e-09,   1.19734906e-07,
-                      3.17314157e-09,   2.27469595e-09,  -2.11189940e-08],
-                  [ -5.13624053e-08,   2.60171362e-07,   4.62632068e-01,
-                      1.00082746e-07,   2.81568920e-07,   6.99461902e-05],
-                  [  2.98805710e-09,  -8.62315114e-10,  -1.90678253e-07,
-                      5.58468140e-09,  -5.46272629e-09,  -5.75557899e-07],
-                  [  8.66285671e-10,   2.97046913e-09,   1.54584155e-07,
-                      5.46269262e-09,   5.55161528e-09,   5.67122163e-08],
-                  [ -9.24540217e-08,   2.09822077e-07,   7.65126136e-05,
-                      4.58344911e-08,   5.74790902e-07,   3.89895992e-04]])
-    Q = 0.5*(Q + Q.T) # assure symmetry
     # Careful here, expectation maximation takes several hours!
     # kf = kf.em(measurements, n_iter=1000)
     # or just run this instead of the one above (it is the same result)
@@ -417,19 +404,36 @@ def step_08_setup_kalman_filter(measurements, time_interval_in_seconds):
                    [0, 1, 0, 0, 0, 0],
                    [0, 0, 1, 0, 0, 0]]),
     "R": np.diag([1e-4, 1e-4, 100])**2,
-    "Q": Q,
     "initial_state_covariance": np.diag([1e-4, 1e-4, 50, 1e-6, 1e-6, 1e-6])**2
     }
 
     kf_list = []
-    for m in measurements:
+    for i, m in enumerate(measurements):
         kf = KalmanFilter(transition_matrices=kf_dict["F"].copy(), 
                         observation_matrices=kf_dict["H"].copy(), 
                         observation_covariance=kf_dict["R"].copy(), 
                         initial_state_mean=np.hstack([m[0, :], 3*[0.]]), # works initial_state_covariance = np.diag([1e-3, 1e-3, 100, 1e-4, 1e-4, 1e-4])**2
                         initial_state_covariance=kf_dict["initial_state_covariance"].copy(), 
-                        em_vars=['transition_covariance'].copy())
-        kf.transition_covariance = kf_dict["Q"].copy()
+                        em_vars=['transition_covariance'])
+        # Q = np.array([[  3.17720723e-09,  -1.56389148e-09,  -2.41793770e-07,
+        #             2.29258935e-09,  -3.17260647e-09,  -2.89201471e-07],
+        #         [  1.56687815e-09,   3.16555076e-09,   1.19734906e-07,
+        #             3.17314157e-09,   2.27469595e-09,  -2.11189940e-08],
+        #         [ -5.13624053e-08,   2.60171362e-07,   4.62632068e-01,
+        #             1.00082746e-07,   2.81568920e-07,   6.99461902e-05],
+        #         [  2.98805710e-09,  -8.62315114e-10,  -1.90678253e-07,
+        #             5.58468140e-09,  -5.46272629e-09,  -5.75557899e-07],
+        #         [  8.66285671e-10,   2.97046913e-09,   1.54584155e-07,
+        #             5.46269262e-09,   5.55161528e-09,   5.67122163e-08],
+        #         [ -9.24540217e-08,   2.09822077e-07,   7.65126136e-05,
+        #             4.58344911e-08,   5.74790902e-07,   3.89895992e-04]])
+        # Q = 0.5*(Q + Q.T) # assure symmetry
+
+        #kf.transition_covariance = Q
+        print(f"started {i}", end="...")
+        t0 = time.time()
+        kf.em(m, n_iter=5)
+        print(f"finished {i} in {time.time()-t0:.2f}")
         kf_list.append(kf)
 
     return kf_list, kf_dict
