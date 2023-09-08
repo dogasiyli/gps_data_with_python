@@ -36,9 +36,12 @@ def deg_dms(direction_in_degrees):
 # @ https://www.movable-type.co.uk/scripts/latlong-vincenty.html
 def calc_geodesic(p1, p2, verbose=False):
     if isinstance(p1, GPXTrackPoint):
-        t1 = p1.time
-        t2 = p2.time
-        time_diff = (t2-t1).total_seconds()
+        try :
+            t1 = p1.time
+            t2 = p2.time
+            time_diff = (t2-t1).total_seconds()
+        except:
+            time_diff=1
         φ1 = math.radians(p1.latitude)
         φ2 = math.radians(p2.latitude)
         λ1 = math.radians(p1.longitude)

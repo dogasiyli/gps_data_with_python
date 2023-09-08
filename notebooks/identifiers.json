@@ -34,5 +34,10 @@
     {
         "file_name": "activity_11238879870.gpx",
         "explanation": "my run on the xth of y at xx:yy"
-    }
+    },
+    "kyzikos_run": 
+    {
+        "file_name": "kyzikos_2023_30K.gpx",
+        "explanation": "kyzikos_2023_30K"
+    }    
 }
